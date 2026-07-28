@@ -674,6 +674,7 @@
 				@delete-draft="handleDeleteDraft"
 				@refresh-history="loadInvoiceHistoryData"
 			/>
+			<SalesDashboard v-model="showDashboard" :pos-profile="shiftStore.profileName" :currency="shiftStore.profileCurrency" />
 
 			<!-- Invoice Detail Dialog -->
 			<InvoiceDetailDialog
@@ -1022,6 +1023,7 @@ import ReturnInvoiceDialog from "@/components/sale/ReturnInvoiceDialog.vue";
 import WarehouseAvailabilityDialog from "@/components/sale/WarehouseAvailabilityDialog.vue";
 import POSSettings from "@/components/settings/POSSettings.vue";
 import InvoiceManagement from "@/components/invoices/InvoiceManagement.vue";
+import SalesDashboard from "@/components/dashboard/SalesDashboard.vue";
 import InvoiceDetailDialog from "@/components/invoices/InvoiceDetailDialog.vue";
 import { useRealtimeStock } from "@/composables/useRealtimeStock";
 import { useSessionLock } from "@/composables/useSessionLock";
@@ -1153,6 +1155,8 @@ const showStockLookup = ref(false);
 
 // Invoice Management dialog
 const showInvoiceManagement = ref(false);
+
+const showDashboard = ref(false);
 
 // Invoice Detail dialog
 const showInvoiceDetail = ref(false);
@@ -2872,6 +2876,8 @@ function handleManagementMenuClick(menuItem) {
 	} else if (menuItem === "products") {
 		// Open Stock Lookup dialog in search mode
 		showStockLookup.value = true;
+	} else if (menuItem === "dashboard") {
+	    showDashboard.value = true;
 	}
 }
 
