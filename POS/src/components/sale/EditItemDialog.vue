@@ -75,6 +75,9 @@
 													>
 														{{ localItem.item_name }}
 													</h3>
+													<p class="text-xs text-gray-400 truncate">
+														{{ localItem.item_code }}
+													</p>
 													<p class="text-sm text-gray-500 truncate">
 														{{
 															formatCurrency(

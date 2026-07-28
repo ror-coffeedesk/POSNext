@@ -8,7 +8,24 @@ Event handlers for Sales Invoice document events
 
 import frappe
 from frappe import _
-from frappe.utils import cint
+from frappe.utils import cint,flt
+
+STOCK_ENTRY_TYPE = "Bar Consumption"
+
+def ensure_stock_entry_type():
+	"""
+	Make sure our custom Stock Entry Type exists. Self-healing —
+	recreates it if it was ever deleted, renamed, or missing after
+	a fresh site setup.
+	"""
+	if frappe.db.exists("Stock Entry Type", STOCK_ENTRY_TYPE):
+		return
+
+	doc = frappe.new_doc("Stock Entry Type")
+	doc.name = STOCK_ENTRY_TYPE
+	doc.purpose = "Material Issue"
+	doc.insert(ignore_permissions=True)
+	frappe.db.commit()
 
 
 def validate(doc, method=None):
@@ -181,3 +198,130 @@ def before_cancel(doc, method=None):
 			alert=True,
 			indicator="orange",
 		)
+
+def issue_stock_on_submit(doc, method=None):
+	if not doc.update_stock or doc.is_return:
+		return
+
+	# Skip if not a POS invoice (check if field exists first)
+	if hasattr(doc, "is_pos") and not doc.is_pos:
+		return
+
+	try:
+		existing = frappe.db.exists("Stock Entry", {
+			"custom_pos_sales_inoive": doc.name,
+			"docstatus": 1
+		})
+		if existing:
+			return
+
+		consumption = {}  # {item_code: {"qty": x, "uom": y, "warehouse": z}}
+		skipped_items = []
+
+		for item in doc.items:
+			bom_name = frappe.db.get_value("Item", item.item_code, "default_bom")
+
+			if not bom_name:
+				skipped_items.append(item.item_code)
+				continue
+
+			# Raw materials are issued from the same warehouse the sold
+			# item is recorded against on the invoice line.
+			warehouse = item.warehouse
+
+			bom = frappe.get_doc("BOM", bom_name)
+			bom_qty = flt(bom.quantity) or 1
+
+			for rm in bom.items:
+				required_qty = (flt(rm.qty) / bom_qty) * flt(item.qty)
+				key = (rm.item_code, warehouse)
+
+				if key not in consumption:
+					consumption[key] = {
+						"qty": 0,
+						"uom": rm.stock_uom or rm.uom,
+						"warehouse": warehouse,
+					}
+				consumption[key]["qty"] += required_qty
+
+		if skipped_items:
+			frappe.msgprint(
+				_("No Default BOM found for: {0}. Skipped stock issue for these.")
+				.format(", ".join(set(skipped_items))),
+				alert=True,
+				indicator="orange"
+			)
+
+		if not consumption:
+			return
+
+		create_material_issue(doc, consumption)
+
+	except Exception as e:
+		# Log error but don't fail the transaction
+		frappe.log_error(
+			title=_("BOM Consumption Error"),
+			message=f"Failed to emit stock update event for {doc.name}: {e!s}",
+		)
+
+
+def cancel_stock_on_cancel(doc, method=None):
+	"""
+	Fires on Sales Invoice cancel. Cancels the linked BOM-consumption
+	Stock Entry, if one was created for this invoice.
+	"""
+
+	stock_entry = frappe.db.get_value("Stock Entry", {
+		"custom_pos_sales_inoive": doc.name,
+		"docstatus": 1
+	})
+	if stock_entry:
+		se = frappe.get_doc("Stock Entry", stock_entry)
+		se.cancel()
+		frappe.msgprint(
+			_("Stock Entry {0} cancelled along with Sales Invoice {1}.")
+			.format(se.name, doc.name)
+		)
+
+
+def create_material_issue(invoice_doc, consumption):
+	ensure_stock_entry_type()
+	se = frappe.new_doc("Stock Entry")
+	se.stock_entry_type = STOCK_ENTRY_TYPE
+	se.custom_pos_opening_shift = invoice_doc.posa_pos_opening_shift
+	se.company = invoice_doc.company
+	se.custom_pos_sales_inoive = invoice_doc.name
+	se.remarks = (
+		f"Auto-issued raw materials for Sales Invoice {invoice_doc.name} "
+		f"(POS Profile: {invoice_doc.pos_profile})"
+	)
+
+	for (item_code, warehouse), data in consumption.items():
+		if data["qty"] == 0:
+			continue
+		se.append("items", {
+			"item_code": item_code,
+			"qty": data["qty"],
+			"uom": data["uom"],
+			"s_warehouse": warehouse,
+		})
+
+	if not se.items:
+		return
+
+	se.insert(ignore_permissions=True)
+
+	try:
+		se.submit()
+
+	except Exception:
+		frappe.log_error(
+			frappe.get_traceback(),
+			f"BOM consumption Stock Entry failed for Sales Invoice {invoice_doc.name}"
+		)
+
+	frappe.msgprint(
+		_("Stock Entry {0} created for Sales Invoice {1}.").format(
+			frappe.utils.get_link_to_form("Stock Entry", se.name), invoice_doc.name
+		)
+	)
