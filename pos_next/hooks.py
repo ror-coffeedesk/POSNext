@@ -23,6 +23,17 @@ app_license = "agpl-3.0"
 # 	}
 # ]
 
+fixtures = [
+	{
+		'dt':'Custom Field',
+		'filters':[['module','=','POS Next']]
+	},
+	{
+		'dt':'Property Setter',
+		'filters':[['module','=','POS Next']]
+	}
+]
+
 # Includes in <head>
 # ------------------
 
