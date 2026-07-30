@@ -56,3 +56,7 @@ typing-modules = ["frappe.types.DF"]
 quote-style = "double"
 indent-style = "tab"
 docstring-code-format = true
+
+[tool.bench.frappe-dependencies]
+frappe = ">=15.0.0-dev,<=17.0.0-dev"
+erpnext = ">=15.0.0-dev,<=17.0.0-dev"
