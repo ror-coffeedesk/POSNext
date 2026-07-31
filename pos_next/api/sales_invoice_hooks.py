@@ -219,7 +219,15 @@ def issue_stock_on_submit(doc, method=None):
 		skipped_items = []
 
 		for item in doc.items:
-			bom_name = frappe.db.get_value("Item", item.item_code, "default_bom")
+			is_stock_item, bom_name = frappe.db.get_value(
+			    "Item",
+			    item.item_code,
+			    ["is_stock_item", "default_bom"]
+			)
+
+			if not is_stock_item:
+				skipped_items.append(item.item_code)
+				continue
 
 			if not bom_name:
 				skipped_items.append(item.item_code)
