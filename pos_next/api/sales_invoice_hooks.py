@@ -225,7 +225,7 @@ def issue_stock_on_submit(doc, method=None):
 			    ["is_stock_item", "default_bom"]
 			)
 
-			if not is_stock_item:
+			if is_stock_item:
 				skipped_items.append(item.item_code)
 				continue
 
