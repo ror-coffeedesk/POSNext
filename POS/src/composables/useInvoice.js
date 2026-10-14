@@ -227,7 +227,10 @@ export function useInvoice() {
 		const itemUom = item.uom || item.stock_uom;
 		const existingItem = invoiceItems.value.find(
 			(i) =>
-				!i.is_free_item && i.item_code === item.item_code && i.uom === itemUom
+				!i.is_free_item &&
+				i.item_code === item.item_code &&
+				i.uom === itemUom &&
+				(i.batch_no || null) === (item.batch_no || null)
 		);
 
 		if (existingItem) {

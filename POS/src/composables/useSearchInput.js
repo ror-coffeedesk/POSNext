@@ -149,6 +149,11 @@ export function useSearchInput({ itemStore, onItemFound, showWarning, isAnyDialo
 		barcodeQueue.withLock(async () => {
 			try {
 				const item = await itemStore.searchByBarcode(barcode);
+				if (item?.scan_error) {
+					showWarning(item.scan_error);
+					focusSearchInput();
+					return;
+				}
 				if (item) {
 					onItemFound(item, shouldAutoAdd);
 					focusSearchInput();

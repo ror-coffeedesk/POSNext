@@ -274,7 +274,7 @@ def get_item_detail(item, doc=None, warehouse=None, price_list=None, company=Non
 				"status": "Active",  # Only available serial numbers
 				"warehouse": warehouse,  # From specified warehouse only
 			},
-			fields=["name as serial_no"],
+			fields=["name as serial_no", "warehouse", "batch_no"],
 		)
 
 	item["selling_price_list"] = price_list
@@ -399,13 +399,34 @@ def search_by_barcode(barcode, pos_profile):
 			"Item Barcode", {"barcode": effective_barcode}, ["parent", "uom"], as_dict=True
 		)
 
+		scanned_serial = None
+		scanned_batch = None
 		if barcode_data:
 			item_code = barcode_data.parent
 			barcode_uom = barcode_data.uom
 		else:
-			# Try searching in item code field directly
-			item_code = frappe.db.get_value("Item", {"name": effective_barcode})
 			barcode_uom = None
+			# Same lookup order as ERPNext's native scan: Serial No, then Batch
+			scanned_serial = frappe.db.get_value(
+				"Serial No",
+				effective_barcode,
+				["name", "item_code", "status", "warehouse", "batch_no"],
+				as_dict=True,
+			)
+			if scanned_serial:
+				item_code = scanned_serial.item_code
+			else:
+				scanned_batch = frappe.db.get_value(
+					"Batch",
+					effective_barcode,
+					["name", "item", "disabled", "expiry_date"],
+					as_dict=True,
+				)
+				if scanned_batch:
+					item_code = scanned_batch.item
+				else:
+					# Try searching in item code field directly
+					item_code = frappe.db.get_value("Item", {"name": effective_barcode})
 
 		if not item_code:
 			frappe.throw(_("Item with barcode {0} not found").format(barcode))
@@ -427,6 +448,36 @@ def search_by_barcode(barcode, pos_profile):
 		# Check if item is allowed for sales
 		if not item_doc.is_sales_item:
 			frappe.throw(_("Item {0} is not allowed for sales").format(item_code))
+
+		# Validate a scanned serial / batch against the POS warehouse. A rejected scan
+		# is returned as {"scan_error": ...} so the UI can show the real reason.
+		scan_error = None
+		if scanned_serial:
+			if scanned_serial.status != "Active":
+				scan_error = _("Serial No {0} is not available (status: {1})").format(
+					scanned_serial.name, _(scanned_serial.status or "")
+				)
+			elif scanned_serial.warehouse != pos_profile_doc.warehouse:
+				scan_error = _("Serial No {0} is not in warehouse {1}").format(
+					scanned_serial.name, pos_profile_doc.warehouse
+				)
+		elif scanned_batch:
+			if scanned_batch.disabled:
+				scan_error = _("Batch {0} is disabled").format(scanned_batch.name)
+			elif scanned_batch.expiry_date and getdate(scanned_batch.expiry_date) <= getdate(nowdate()):
+				scan_error = _("Batch {0} has expired").format(scanned_batch.name)
+			else:
+				batch_qty = sum(
+					flt(b.qty)
+					for b in (get_batch_qty(warehouse=pos_profile_doc.warehouse, item_code=item_code) or [])
+					if b.batch_no == scanned_batch.name
+				)
+				if batch_qty <= 0:
+					scan_error = _("Batch {0} has no stock in warehouse {1}").format(
+						scanned_batch.name, pos_profile_doc.warehouse
+					)
+		if scan_error:
+			return {"scan_error": scan_error}
 
 		# Prepare item dict for get_item_detail
 		item = {
@@ -459,6 +510,13 @@ def search_by_barcode(barcode, pos_profile):
 		)
 
 		item_details["uom_prices"] = uom_prices
+
+		# Tell the UI which serial / batch was scanned
+		if scanned_serial:
+			item_details["scanned_serial_no"] = scanned_serial.name
+			item_details["scanned_batch_no"] = scanned_serial.batch_no or None
+		elif scanned_batch:
+			item_details["scanned_batch_no"] = scanned_batch.name
 
 		# Apply resolved barcode data (weighted/priced) to the item details
 		if resolved_barcode_data:
@@ -546,7 +604,7 @@ def get_batch_serial_details(item_code, warehouse):
 			SerialNo = DocType("Serial No")
 			serial_nos = (
 				frappe.qb.from_(SerialNo)
-				.select(SerialNo.name.as_("serial_no"), SerialNo.warehouse)
+				.select(SerialNo.name.as_("serial_no"), SerialNo.warehouse, SerialNo.batch_no)
 				.where(SerialNo.item_code == item_code)
 				.where(SerialNo.warehouse == warehouse)
 				.where(SerialNo.status == "Active")
@@ -2422,7 +2480,7 @@ def get_batch_serial_data_for_items(item_codes, warehouse):
 					"status": "Active",
 					"warehouse": warehouse,
 				},
-				fields=["name as serial_no", "item_code", "warehouse"],
+				fields=["name as serial_no", "item_code", "warehouse", "batch_no"],
 			)
 
 			# Group by item_code
@@ -2431,6 +2489,7 @@ def get_batch_serial_data_for_items(item_codes, warehouse):
 					{
 						"serial_no": serial["serial_no"],
 						"warehouse": serial["warehouse"],
+						"batch_no": serial.get("batch_no"),
 					}
 				)
 

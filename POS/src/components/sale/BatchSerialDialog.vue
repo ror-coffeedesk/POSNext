@@ -2,7 +2,7 @@
 	<Dialog
 		v-model="show"
 		:options="{
-			title: item?.has_batch_no ? __('Select Batch Numbers') : __('Select Serial Numbers'),
+			title: dialogTitle,
 			size: 'lg',
 		}"
 	>
@@ -317,6 +317,8 @@ const props = defineProps({
 	},
 	warehouse: String,
 	posProfile: String,
+	// Batch to preselect (set when a batch number was scanned)
+	initialBatchNo: String,
 });
 
 const emit = defineEmits(["update:modelValue", "batch-serial-selected"]);
@@ -375,6 +377,8 @@ const batchesResource = createResource({
 				manufacturing_date: batch.manufacturing_date,
 			}));
 
+			applyInitialBatch();
+
 			// Persist for offline batch selection
 			if (props.item?.item_code) {
 				persistItemBatchSerialData(props.item.item_code, {
@@ -409,24 +413,41 @@ const totalSelectedSerials = computed(() => {
 	return selectedSerials.value.length;
 });
 
+const dialogTitle = computed(() => {
+	if (props.item?.has_batch_no && props.item?.has_serial_no) {
+		return __("Select Batch and Serial Numbers");
+	}
+	return props.item?.has_batch_no ? __("Select Batch Numbers") : __("Select Serial Numbers");
+});
+
+// Batch + serial item with no batch picked yet: nothing to show
+const needsBatchFirst = computed(
+	() => !!props.item?.has_batch_no && !!props.item?.has_serial_no && !selectedBatch.value
+);
+
+// Serials limited to the selected batch (serials with no batch recorded are kept)
+const batchScopedSerials = computed(() => {
+	if (!props.item?.has_batch_no) return availableSerials.value;
+	if (!selectedBatch.value) return [];
+	return availableSerials.value.filter(
+		(s) => !s.batch_no || s.batch_no === selectedBatch.value.batch_no
+	);
+});
+
 const filteredSerials = computed(() => {
 	if (!serialSearchQuery.value.trim()) {
-		return availableSerials.value;
+		return batchScopedSerials.value;
 	}
 	const query = serialSearchQuery.value.toLowerCase().trim();
-	return availableSerials.value.filter((serial) =>
+	return batchScopedSerials.value.filter((serial) =>
 		serial.serial_no.toLowerCase().includes(query)
 	);
 });
 
 const isValid = computed(() => {
-	if (props.item?.has_batch_no) {
-		return selectedBatch.value !== null;
-	}
-	if (props.item?.has_serial_no) {
-		// Valid if at least one serial is selected
-		return totalSelectedSerials.value >= 1;
-	}
+	if (props.item?.has_batch_no && selectedBatch.value === null) return false;
+	// Valid if at least one serial is selected
+	if (props.item?.has_serial_no && totalSelectedSerials.value < 1) return false;
 	return true;
 });
 
@@ -435,43 +456,53 @@ const isLoadingSerials = computed(() => serialStore.loading);
 
 async function loadBatchesOrSerials() {
 	if (props.item?.has_batch_no) {
-		// Try cached data first when offline
-		if (isOffline()) {
-			const cachedBatches = await getCachedBatchData(props.item.item_code);
-			if (cachedBatches && cachedBatches.length > 0) {
-				warehouseBatches.value = cachedBatches.map((batch) => ({
-					batch_no: batch.batch_no,
-					qty: batch.batch_qty,
-					expiry_date: batch.expiry_date,
-					manufacturing_date: batch.manufacturing_date,
-				}));
-				return;
-			}
-			warehouseBatches.value = [];
-			return;
-		}
-		// Fetch from server when online
-		batchesResource.reload();
-	} else if (props.item?.has_serial_no) {
-		// Set warehouse in store (also scopes serials returned while offline)
-		serialStore.setWarehouse(props.warehouse);
-		// Try cached data first when offline
-		if (isOffline()) {
-			const cachedSerials = await getCachedSerialData(props.item.item_code);
-			if (cachedSerials && cachedSerials.length > 0) {
-				availableSerials.value = cachedSerials;
-				return;
-			}
-			availableSerials.value = [];
-			return;
-		}
-		// Fetch from store (uses cache if valid)
-		const serials = await serialStore.fetchSerials(props.item.item_code);
-		availableSerials.value = serials;
+		await loadBatches();
+	}
+	if (props.item?.has_serial_no) {
+		await loadSerials();
 	}
 }
 
+async function loadBatches() {
+	// Try cached data first when offline
+	if (isOffline()) {
+		const cachedBatches = await getCachedBatchData(props.item.item_code);
+		warehouseBatches.value = (cachedBatches || []).map((batch) => ({
+			batch_no: batch.batch_no,
+			qty: batch.batch_qty,
+			expiry_date: batch.expiry_date,
+			manufacturing_date: batch.manufacturing_date,
+		}));
+		applyInitialBatch();
+		return;
+	}
+	// Fetch from server when online
+	batchesResource.reload();
+}
+
+async function loadSerials() {
+	// Set warehouse in store (also scopes serials returned while offline)
+	serialStore.setWarehouse(props.warehouse);
+	if (isOffline()) {
+		availableSerials.value = (await getCachedSerialData(props.item.item_code)) || [];
+		return;
+	}
+	// Fetch from store (uses cache if valid)
+	availableSerials.value = await serialStore.fetchSerials(props.item.item_code);
+}
+
+function applyInitialBatch() {
+	if (!props.initialBatchNo || selectedBatch.value) return;
+	const match = availableBatches.value.find((b) => b.batch_no === props.initialBatchNo);
+	if (match) selectBatch(match);
+}
+
 function selectBatch(batch) {
+	if (selectedBatch.value?.batch_no !== batch.batch_no) {
+		// Serials belong to a batch: drop picks from the previous one
+		selectedSerials.value = [];
+		serialSearchQuery.value = "";
+	}
 	selectedBatch.value = batch;
 }
 

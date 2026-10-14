@@ -655,6 +655,7 @@
 				:quantity="cartStore.pendingItemQty"
 				:warehouse="shiftStore.profileWarehouse"
 				:pos-profile="cartStore.posProfile"
+				:initial-batch-no="cartStore.pendingItem?.scanned_batch_no"
 				@batch-serial-selected="handleBatchSerialSelected"
 			/>
 
@@ -2015,7 +2016,72 @@ async function handleShiftClosed() {
 	}
 }
 
+// A scan that matched a Serial No or Batch (see search_by_barcode)
+function handleScannedBatchSerial(item) {
+	const serialNo = item.scanned_serial_no;
+	const batchNo = item.scanned_batch_no;
+
+	if (serialNo) {
+		const inCart = cartStore.invoiceItems.some((i) =>
+			(i.serial_no || "")
+				.split("\n")
+				.map((x) => x.trim())
+				.includes(serialNo)
+		);
+		if (inCart) {
+			showWarning(__("Serial No {0} is already in the cart", [serialNo]));
+			return;
+		}
+		// Batch-tracked item whose serial has no batch recorded: let the user pick one
+		if (!(item.has_batch_no && !batchNo)) {
+			try {
+				cartStore.addItem(
+					{ ...item, serial_no: serialNo, batch_no: batchNo || undefined },
+					1,
+					true,
+					shiftStore.currentProfile
+				);
+				showSuccess(__("Serial No {0} added", [serialNo]));
+			} catch (error) {
+				uiStore.showError(
+					__("Insufficient Stock"),
+					error.message,
+					__("Item: {0}", [item.item_code])
+				);
+			}
+			return;
+		}
+	} else if (batchNo && !item.has_serial_no) {
+		// Batch-only item: the scanned batch is the selection
+		try {
+			cartStore.addItem(
+				{ ...item, batch_no: batchNo },
+				1,
+				true,
+				shiftStore.currentProfile
+			);
+		} catch (error) {
+			uiStore.showError(
+				__("Insufficient Stock"),
+				error.message,
+				__("Item: {0}", [item.item_code])
+			);
+		}
+		return;
+	}
+
+	// Batch scanned for a serial-tracked item (or serial without batch): open the
+	// popup, with the scanned batch preselected, so serials can be picked
+	cartStore.setPendingItem(item, 1);
+	uiStore.showBatchSerialDialog = true;
+}
+
 function handleItemSelected(item, autoAdd = false) {
+	if (item?.scanned_serial_no || item?.scanned_batch_no) {
+		handleScannedBatchSerial(item);
+		return;
+	}
+
 	// Auto-add mode
 	if (autoAdd) {
 		try {
