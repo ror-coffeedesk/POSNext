@@ -1897,6 +1897,176 @@ def submit_invoice(invoice=None, data=None):
 
 
 # ==========================================
+# Modify a paid invoice (cancel & amend)
+# ==========================================
+
+ACTION_SALES_INVOICE_MODIFY = "Sales Invoice Modify"
+
+
+def _modify_blockers(orig):
+	"""Reasons a submitted POS invoice can't be modified. Empty list means it can."""
+	blockers = []
+
+	if orig.docstatus != 1:
+		blockers.append(_("Only submitted invoices can be modified."))
+		return blockers
+	if orig.get("is_return"):
+		blockers.append(_("Return invoices can't be modified."))
+	if not orig.get("is_pos"):
+		blockers.append(_("Only POS invoices can be modified here."))
+
+	if frappe.db.exists("Sales Invoice", {"return_against": orig.name, "docstatus": 1}):
+		blockers.append(_("A return exists against this invoice."))
+
+	shift = orig.get("posa_pos_opening_shift")
+	if not shift:
+		blockers.append(_("This invoice is not linked to a POS shift."))
+	elif frappe.db.get_value("POS Opening Shift", shift, "status") != "Open":
+		blockers.append(_("The shift {0} is already closed.").format(shift))
+
+	if frappe.db.exists(
+		"Payment Entry Reference",
+		{"reference_doctype": "Sales Invoice", "reference_name": orig.name, "docstatus": 1},
+	) or frappe.db.exists(
+		"Journal Entry Account",
+		{"reference_type": "Sales Invoice", "reference_name": orig.name, "docstatus": 1},
+	):
+		blockers.append(
+			_("Payments or credit were applied to this invoice separately (Payment Entry / Journal Entry).")
+		)
+
+	# Cancelling an invoice does not reverse wallet points/credit tied to it
+	if frappe.db.exists(
+		"Wallet Transaction",
+		{"reference_doctype": "Sales Invoice", "reference_name": orig.name, "docstatus": ["!=", 2]},
+	):
+		blockers.append(
+			_("Wallet points or credit were used or earned on this invoice. Use Return Invoice instead.")
+		)
+
+	return blockers
+
+
+@frappe.whitelist()
+def get_invoice_modify_status(invoice_name):
+	"""Whether the invoice can be modified (cancelled and amended), and why not."""
+	from pos_next.authorization import gate
+
+	if not frappe.has_permission("Sales Invoice", "read", invoice_name):
+		frappe.throw(_("You don't have permission to view this invoice"))
+
+	orig = frappe.get_doc("Sales Invoice", invoice_name)
+	blockers = _modify_blockers(orig)
+
+	# Cancelling is destructive: with no authorization rule configured it is limited to
+	# users who could cancel the invoice in the desk anyway.
+	if (
+		not blockers
+		and not gate.is_required(ACTION_SALES_INVOICE_MODIFY, orig.get("pos_profile"))
+		and not frappe.has_permission("Sales Invoice", "cancel")
+	):
+		blockers.append(
+			_(
+				"Modifying a paid invoice needs a POS Authorization Rule for 'Sales Invoice Modify' "
+				"(manager approval), or permission to cancel Sales Invoices."
+			)
+		)
+
+	return {
+		"can_modify": not blockers,
+		"reasons": blockers,
+		"pos_profile": orig.get("pos_profile"),
+	}
+
+
+@frappe.whitelist()
+def amend_invoice(original_invoice, invoice, data=None, reason=None, authorization_token=None):
+	"""Replace a paid POS invoice with a corrected one: cancel it and create the amendment.
+
+	Everything happens in this one request, so any failure (stock, validation, payment)
+	rolls back the cancel too and the original invoice stays as it was. The amended
+	invoice reuses the normal create-and-submit path, so it gets the same pricing,
+	stock and accounting handling as a fresh sale, and carries the original's number
+	plus a suffix (``INV-0001-1``) via ``amended_from``.
+	"""
+	from pos_next.authorization import gate
+
+	invoice = json.loads(invoice) if isinstance(invoice, str) else (invoice or {})
+	data = json.loads(data) if isinstance(data, str) else (data or {})
+
+	reason = (reason or "").strip()
+	if not reason:
+		frappe.throw(_("A reason is required to modify an invoice."), title=_("Reason Required"))
+
+	orig = frappe.get_doc("Sales Invoice", original_invoice)
+	blockers = _modify_blockers(orig)
+	if blockers:
+		frappe.throw("<br>".join(blockers), title=_("Invoice Can't Be Modified"))
+
+	pos_profile = orig.get("pos_profile")
+	rule_required = gate.is_required(ACTION_SALES_INVOICE_MODIFY, pos_profile)
+	if not rule_required and not frappe.has_permission("Sales Invoice", "cancel"):
+		frappe.throw(
+			_("You don't have permission to modify paid invoices."), title=_("Not Permitted")
+		)
+
+	grant = gate.enforce_context(
+		ACTION_SALES_INVOICE_MODIFY,
+		{"pos_profile": pos_profile, "invoice": orig.name},
+		authorization_token,
+		reference=orig.name,
+	)
+
+	orig.flags.ignore_permissions = True
+	frappe.flags.ignore_account_permission = True
+	try:
+		orig.cancel()
+	except frappe.LinkExistsError:
+		frappe.throw(
+			_(
+				"{0} is linked to other documents and can't be cancelled. Use Return Invoice instead."
+			).format(orig.name),
+			title=_("Invoice Can't Be Modified"),
+		)
+
+	payload = dict(invoice)
+	for key in ("name", "docstatus", "creation", "modified"):
+		payload.pop(key, None)
+	payload.update(
+		{
+			"doctype": "Sales Invoice",
+			"amended_from": orig.name,
+			"pos_profile": pos_profile,
+			"posa_pos_opening_shift": orig.get("posa_pos_opening_shift"),
+			"remarks": _("Modified from {0}. Reason: {1}").format(orig.name, reason),
+		}
+	)
+
+	draft = update_invoice(json.dumps(payload, default=str))
+	if not draft or not draft.get("name"):
+		frappe.throw(_("Failed to create the amended invoice."))
+
+	if grant:
+		frappe.db.set_value(
+			"Sales Invoice",
+			draft["name"],
+			{"custom_authorized_by": grant["approver"], "custom_authorized_at": frappe.utils.now_datetime()},
+			update_modified=False,
+		)
+
+	result = submit_invoice(invoice=draft, data=data)
+
+	orig.add_comment(
+		"Info",
+		_("Cancelled and replaced by {0} (modified by {1}). Reason: {2}").format(
+			result.get("name"), frappe.session.user, reason
+		),
+	)
+	result["amended_from"] = orig.name
+	return result
+
+
+# ==========================================
 # Invoice History Management
 # ==========================================
 

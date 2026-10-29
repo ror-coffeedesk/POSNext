@@ -121,6 +121,18 @@
 									<Button
 										v-if="canCreateReturn(invoice)"
 										variant="ghost"
+										theme="blue"
+										size="sm"
+										@click="openModifyDialog(invoice)"
+										:title="__('Modify Invoice')"
+									>
+										<svg class="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+											<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
+										</svg>
+									</Button>
+									<Button
+										v-if="canCreateReturn(invoice)"
+										variant="ghost"
 										theme="orange"
 										size="sm"
 										@click="openReturnModal(invoice)"
@@ -160,12 +172,49 @@
 		:preselected-invoice="selectedInvoiceForReturn"
 		@return-created="handleReturnCreated"
 	/>
+
+	<!-- Modify Invoice: ask for a reason, then reopen the sale in the cart -->
+	<Dialog v-model="showModifyDialog" :options="{ title: __('Modify Invoice'), size: 'md' }">
+		<template #body-content>
+			<div class="flex flex-col gap-3">
+				<p class="text-sm text-gray-600">
+					{{
+						__(
+							"{0} will be cancelled and replaced by a corrected invoice when you complete the sale.",
+							[modifyTarget?.name]
+						)
+					}}
+				</p>
+				<label class="text-sm font-medium text-gray-700">{{ __("Reason for change") }}</label>
+				<textarea
+					v-model="modifyReason"
+					rows="3"
+					class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+					:placeholder="__('e.g. wrong mode of payment, item added, discount missed')"
+				></textarea>
+			</div>
+		</template>
+		<template #actions>
+			<div class="flex gap-2">
+				<Button variant="subtle" @click="showModifyDialog = false">{{ __("Cancel") }}</Button>
+				<Button
+					variant="solid"
+					:loading="modifyChecking"
+					:disabled="!modifyReason.trim()"
+					@click="confirmModify"
+				>
+					{{ __("Continue") }}
+				</Button>
+			</div>
+		</template>
+	</Dialog>
 </template>
 
 <script setup>
 import { useFormatters } from "@/composables/useFormatters"
 import { useToast } from "@/composables/useToast"
 import { DEFAULT_CURRENCY, DEFAULT_LOCALE, formatCurrency as formatCurrencyUtil } from "@/utils/currency"
+import { call } from "@/utils/apiWrapper"
 import { getInvoiceStatusColor } from "@/utils/invoice"
 import { Button, Dialog, Input, createResource } from "frappe-ui"
 import { computed, ref, watch } from "vue"
@@ -194,6 +243,7 @@ const emit = defineEmits([
 	"view-invoice",
 	"print-invoice",
 	"return-created",
+	"modify-invoice",
 ]);
 
 const show = ref(props.modelValue)
@@ -334,6 +384,41 @@ function canCreateReturn(invoice) {
 	// 2. Not already a return invoice
 	// 3. Status is not "Credit Note Issued" (already has a return)
 	return invoice.docstatus === 1 && !invoice.is_return && invoice.status !== 'Credit Note Issued'
+}
+
+const showModifyDialog = ref(false)
+const modifyTarget = ref(null)
+const modifyReason = ref("")
+const modifyChecking = ref(false)
+
+function openModifyDialog(invoice) {
+	modifyTarget.value = invoice
+	modifyReason.value = ""
+	showModifyDialog.value = true
+}
+
+async function confirmModify() {
+	const invoice = modifyTarget.value
+	const reason = modifyReason.value.trim()
+	if (!invoice || !reason) return
+
+	modifyChecking.value = true
+	try {
+		const status = await call("pos_next.api.invoices.get_invoice_modify_status", {
+			invoice_name: invoice.name,
+		})
+		if (!status?.can_modify) {
+			showError((status?.reasons || [__("This invoice can't be modified.")]).join(" "))
+			return
+		}
+		showModifyDialog.value = false
+		show.value = false
+		emit("modify-invoice", { invoice, reason })
+	} catch (error) {
+		showError(error?.message || __("Could not check whether this invoice can be modified"))
+	} finally {
+		modifyChecking.value = false
+	}
 }
 
 function openReturnModal(invoice) {

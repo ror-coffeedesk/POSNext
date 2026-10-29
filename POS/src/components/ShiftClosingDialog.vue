@@ -589,6 +589,136 @@
 						</div>
 					</div>
 
+					<!-- Additional Wastage: added to this shift's consolidated ingredient consumption -->
+					<div
+						v-if="!showSuccessReport"
+						class="bg-white border border-gray-200 rounded-lg shadow-sm"
+					>
+						<div
+							class="px-3 py-3 md:px-6 md:py-4 border-b border-gray-200 bg-rose-50 flex items-center justify-between gap-3"
+						>
+							<div>
+								<h3 class="text-sm md:text-lg font-semibold text-gray-900 text-start">
+									{{ __("Additional Wastage") }}
+								</h3>
+								<p class="text-xs md:text-sm text-gray-600 text-start">
+									{{
+										__(
+											"Spillage, expiry, calibration shots... deducted from stock when the shift closes."
+										)
+									}}
+								</p>
+							</div>
+							<button
+								type="button"
+								class="shrink-0 px-3 py-1.5 text-sm font-medium text-white bg-rose-600 rounded-md hover:bg-rose-700"
+								@click="addWastageRow"
+							>
+								{{ __("Add Row") }}
+							</button>
+						</div>
+						<div class="overflow-visible">
+							<table class="min-w-full divide-y divide-gray-200">
+								<thead class="bg-gray-50">
+									<tr>
+										<th class="px-4 py-2 text-start text-xs font-medium text-gray-500 uppercase"> {{ __("Item Code") }} </th>
+<th class="px-4 py-2 text-start text-xs font-medium text-gray-500 uppercase"> {{ __("Item Name") }} </th>
+										<th class="px-4 py-2 text-start text-xs font-medium text-gray-500 uppercase">
+											{{ __("Qty") }}
+										</th>
+										<th class="px-4 py-2 text-start text-xs font-medium text-gray-500 uppercase">
+											{{ __("Stock UOM") }}
+										</th>
+										<th class="px-4 py-2 text-start text-xs font-medium text-gray-500 uppercase">
+											{{ __("Reason") }}
+										</th>
+										<th class="px-2 py-2"></th>
+									</tr>
+								</thead>
+								<tbody class="divide-y divide-gray-200">
+									<tr v-if="!wastageRows.length">
+										<td colspan="6" class="px-4 py-3 text-sm text-gray-500 text-start">
+											{{ __("No wastage entered. Click Add Row to record any.") }}
+										</td>
+									</tr>
+									<tr v-for="(row, idx) in wastageRows" :key="row._key">
+										<td class="px-4 py-2 relative min-w-[14rem]">
+											<input
+												type="text"
+												v-model="row._search"
+												:placeholder="__('Select item code')"
+												autocomplete="off" 
+												class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-rose-400"
+												@input="searchWastageItem(row)" @focus="searchWastageItem(row, true)" @blur="closeWastageList(row)"
+											/>
+											<!-- in normal flow (not floating), so the dialog can never clip it -->
+<div v-if="row._open" class="mt-1 max-h-48 overflow-auto bg-white border border-gray-200 rounded-md">
+	<div v-if="row._loading" class="px-3 py-2 text-xs text-gray-500">{{ __("Searching...") }}</div>
+	<div v-else-if="!row._results.length" class="px-3 py-2 text-xs text-gray-500">
+		{{ __("No stock items found") }}
+	</div>
+	<button
+		v-for="r in row._results"
+		:key="r.item_code"
+		type="button"
+		class="block w-full px-3 py-2 text-start text-sm hover:bg-gray-50"
+		@mousedown.prevent="pickWastageItem(row, r)"
+	>
+		{{ r.item_code }}
+		<span class="text-xs text-gray-500">{{ r.item_name }} · {{ r.stock_uom }}</span>
+	</button>
+</div>
+</td>
+<td class="px-4 py-2 text-sm text-gray-700 min-w-[10rem]">{{ row.item_name || "-" }}</td>
+<td class="px-4 py-2"> <input type="number"
+												min="0"
+												step="any"
+												inputmode="decimal"
+												v-model.number="row.qty"
+												class="w-24 px-2 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-rose-400"
+											/>
+										</td>
+										<td class="px-4 py-2 text-sm text-gray-600">
+											{{ row.stock_uom || "-" }}
+										</td>
+										<td class="px-4 py-2 min-w-[12rem]">
+											<input
+												type="text"
+												list="pos-wastage-reasons"
+												v-model="row.reason"
+												:placeholder="__('Reason')"
+												class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-rose-400"
+											/>
+										</td>
+										<td class="px-2 py-2 text-end">
+											<button
+												type="button"
+												class="text-gray-400 hover:text-red-600 text-lg leading-none"
+												:title="__('Remove')"
+												@click="removeWastageRow(idx)"
+											>
+												&times;
+											</button>
+										</td>
+									</tr>
+								</tbody>
+							</table>
+							<datalist id="pos-wastage-reasons">
+								<option :value="__('Spillage')"></option>
+								<option :value="__('Expired')"></option>
+								<option :value="__('Spoiled / quality reject')"></option>
+								<option :value="__('Staff / training')"></option>
+								<option :value="__('Machine calibration')"></option>
+								<option :value="__('Other')"></option>
+							</datalist>
+<div class="px-4 py-2 border-t border-gray-100">
+	<button type="button" class="text-sm font-medium text-rose-600 hover:text-rose-700" @click="addWastageRow">
+		+ {{ __("Add Row") }}
+	</button>
+</div>
+						</div>
+					</div>
+
 					<!-- Payment Reconciliation -->
 					<div
 						class="bg-white border border-gray-200 rounded-lg overflow-hidden shadow-sm"
@@ -1175,7 +1305,7 @@
 </template>
 
 <script setup>
-import { Button, Dialog, FeatherIcon, Input } from "frappe-ui";
+import { Button, Dialog, FeatherIcon, Input, call } from "frappe-ui";
 import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 import { useShift, shiftState } from "../composables/useShift";
@@ -1222,6 +1352,105 @@ const errorMessage = ref(""); // User-friendly error message
 const eodPrintFailed = ref(null);
 const retryPrintLoading = ref(false);
 const showIdleWarning = ref(false);
+
+// Additional wastage typed by the cashier at closing (item, qty in stock UOM, reason).
+// Sent as `custom_wastage`; the server adds it to the shift's consolidated consumption.
+const wastageRows = ref([]);
+let _wastageKey = 0;
+// dotted path of the whitelisted item search (module that holds recipe_consumption.py)
+const WASTAGE_SEARCH_METHOD = "pos_next.api.recipe_consumption.search_wastage_items";
+
+function addWastageRow() {
+	wastageRows.value.push(
+		reactive({
+			_key: ++_wastageKey,
+			_search: "",
+			_results: [],
+			_open: false,
+			_loading: false,
+			_timer: null,
+			item_code: "",
+			item_name: "",
+			stock_uom: "",
+			qty: null,
+			reason: "",
+		})
+	);
+}
+
+function removeWastageRow(idx) {
+	wastageRows.value.splice(idx, 1);
+}
+
+function closeWastageList(row) {
+	setTimeout(() => {
+		row._open = false;
+	}, 150);
+}
+
+// onFocus: open the list without discarding an item that is already picked
+function searchWastageItem(row, onFocus = false) {
+	if (onFocus && row.item_code) return;
+	if (!onFocus) {
+		// typing again invalidates the previously picked item
+		row.item_code = "";
+		row.item_name = "";
+		row.stock_uom = "";
+	}
+	clearTimeout(row._timer);
+	const txt = (row._search || "").trim();
+	row._open = true;
+	row._loading = true;
+	row._timer = setTimeout(
+		async () => {
+			try {
+				row._results =
+					(await call(WASTAGE_SEARCH_METHOD, { txt })) ||
+					[];
+			} catch (e) {
+				row._results = [];
+				row._open = false;
+				console.error("[wastage] item search failed", e);
+				showWarning(__("Item search failed: {0}", [String(e?.messages?.[0] || e?.message || e)]));
+			} finally {
+				row._loading = false;
+			}
+		},
+		onFocus ? 0 : 250
+	);
+}
+
+function pickWastageItem(row, item) {
+	row.item_code = item.item_code;
+	row.item_name = item.item_name;
+	row.stock_uom = item.stock_uom;
+	row._search = item.item_code;
+	row._results = [];
+	row._open = false;
+}
+
+// Returns the rows to send, or null (after a warning) if any started row is incomplete.
+function collectWastage() {
+	const rows = [];
+	for (const [i, r] of wastageRows.value.entries()) {
+		const untouched = !r._search && !r.qty && !r.reason;
+		if (untouched) continue;
+		if (!r.item_code) {
+			showWarning(__("Wastage row {0}: pick an item from the list", [i + 1]));
+			return null;
+		}
+		if (!(Number(r.qty) > 0)) {
+			showWarning(__("Wastage row {0}: enter a quantity greater than zero", [i + 1]));
+			return null;
+		}
+		if (!(r.reason || "").trim()) {
+			showWarning(__("Wastage row {0}: enter a reason", [i + 1]));
+			return null;
+		}
+		rows.push({ item_code: r.item_code, qty: Number(r.qty), reason: r.reason.trim() });
+	}
+	return rows;
+}
 let _idleWarningTimer = null;
 
 // Watch dialog open state
@@ -1260,6 +1489,8 @@ onBeforeUnmount(() => {
 });
 
 async function loadClosingData() {
+	wastageRows.value = [];
+	addWastageRow(); // one blank row so the table is visible; untouched rows are ignored on submit
 	try {
 		errorMessage.value = ""; // Clear any previous errors
 
@@ -1325,6 +1556,10 @@ const canSubmit = computed(() => {
 
 async function submitClosing() {
 	if (!closingData.value) return;
+
+	const wastage = collectWastage();
+	if (wastage === null) return; // an incomplete wastage row: warning already shown
+	closingData.value.custom_wastage = wastage;
 
 	try {
 		errorMessage.value = ""; // Clear any previous errors

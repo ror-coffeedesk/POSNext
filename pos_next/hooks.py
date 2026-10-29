@@ -65,6 +65,7 @@ doctype_js = {
 	"POS Profile": "public/js/pos_profile.js",
 	"Pricing Rule": "public/js/pricing_rule.js",
 	"Promotional Scheme": "public/js/promotional_scheme.js",
+	"POS Closing Shift": "public/js/pos_closing_shift.js"
 }
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
@@ -106,7 +107,14 @@ jinja = {
 # --------
 fixtures = [
 	{"dt": "Role", "filters": [["role_name", "in", ["POSNext Cashier", "Nexus POS Manager"]]]},
-	{"dt": "Custom DocPerm", "filters": [["role", "in", ["POSNext Cashier", "Nexus POS Manager"]]]},
+	{
+		'dt':'Custom Field',
+		'filters':[['module','=','POS Next']]
+	},
+	{
+		'dt':'Property Setter',
+		'filters':[['module','=','POS Next']]
+	}
 ]
 
 # Installation
@@ -175,12 +183,12 @@ doc_events = {
 			"pos_next.realtime_events.emit_stock_update_event",
 			"pos_next.api.wallet.process_loyalty_to_wallet",
 			"pos_next.api.sales_invoice_hooks.record_one_time_offer_usage",
-			"pos_next.api.sales_invoice_hooks.issue_stock_on_submit",
+			# "pos_next.api.sales_invoice_hooks.issue_stock_on_submit",
 		],
 		"on_cancel": [
 			"pos_next.realtime_events.emit_stock_update_event",
 			"pos_next.api.sales_invoice_hooks.release_one_time_offer_usage",
-			"pos_next.api.sales_invoice_hooks.cancel_stock_on_cancel",
+			# "pos_next.api.sales_invoice_hooks.cancel_stock_on_cancel",
 		],
 		"after_insert": "pos_next.realtime_events.emit_invoice_created_event",
 	},
@@ -193,6 +201,11 @@ doc_events = {
 		"on_update": "pos_next.api.wallet.clear_wallet_payment_modes_cache",
 		"on_trash": "pos_next.api.wallet.clear_wallet_payment_modes_cache",
 	},
+	"POS Closing Shift": {
+		"on_submit": "pos_next.api.recipe_consumption.on_closing_shift_submit",
+		"on_cancel": "pos_next.api.recipe_consumption.on_closing_shift_cancel",
+		"validate": "pos_next.api.recipe_consumption.validate_wastage",
+	}
 }
 
 # Scheduled Tasks
@@ -201,6 +214,7 @@ doc_events = {
 scheduler_events = {
 	"hourly": [
 		"pos_next.tasks.branding_monitor.monitor_branding_integrity",
+		"pos_next.api.recipe_consumption.retry_pending",
 	],
 	"daily": [
 		"pos_next.tasks.cleanup_expired_promotions.cleanup_expired_promotions",

@@ -21,6 +21,7 @@ from pos_next.authorization.registry import Action, register
 
 ACTION_SALES_INVOICE_RETURN = "Sales Invoice Return"
 ACTION_RETURN_WITHOUT_INVOICE = "Sales Return Without Invoice"
+ACTION_SALES_INVOICE_MODIFY = "Sales Invoice Modify"
 
 SALES_INVOICE = "Sales Invoice"
 
@@ -55,6 +56,20 @@ register(
 			"pos_profile": ctx.get("pos_profile"),
 			"customer": ctx.get("customer"),
 			"amount": flt(ctx.get("amount")),
+		},
+	)
+)
+
+# Modifying a paid invoice (cancel and amend). Raised from the cart/API rather than from
+# a document hook: the cancel happens before the amended invoice exists, so the grant is
+# spent once, by ``amend_invoice``, bound to the invoice being replaced. No ``amount`` in
+# the binding - a modification may legitimately raise the total.
+register(
+	Action(
+		name=ACTION_SALES_INVOICE_MODIFY,
+		binding=lambda ctx: {
+			"pos_profile": ctx.get("pos_profile"),
+			"invoice": ctx.get("invoice"),
 		},
 	)
 )

@@ -407,6 +407,26 @@
 							]"
 							style="min-width: 300px; contain: layout style paint"
 						>
+							<div
+								v-if="modifyContext"
+								class="flex items-center justify-between gap-2 px-3 py-2 bg-amber-50 border-b border-amber-200 text-xs text-amber-900"
+							>
+								<span class="min-w-0">
+									{{
+										__(
+											"Modifying {0}. Complete the sale to replace it; the original is cancelled only then.",
+											[modifyContext.name]
+										)
+									}}
+								</span>
+								<button
+									type="button"
+									class="flex-shrink-0 font-semibold underline"
+									@click="cancelModify"
+								>
+									{{ __("Cancel modify") }}
+								</button>
+							</div>
 							<InvoiceCart
 								ref="invoiceCartRef"
 								:items="cartStore.invoiceItems"
@@ -678,6 +698,7 @@
 				@view-invoice="handleViewInvoice"
 				@print-invoice="handlePrintInvoice"
 				@return-created="handleReturnCreated"
+				@modify-invoice="handleModifyInvoice"
 			/>
 
 			<!-- Shift History Dialog -->
@@ -1143,6 +1164,8 @@ import { qzConnected, connect as qzConnect, disconnect as qzDisconnect } from "@
 
 import { Button, Dialog, createResource } from "frappe-ui";
 import { call } from "@/utils/apiWrapper";
+import { useAuthorization } from "@/composables/useAuthorization";
+import { isAuthorizationError } from "@/utils/authorizationError";
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useToast } from "@/composables/useToast";
 
@@ -1232,6 +1255,11 @@ let previousCartHash = "";
 // handlePaymentCompleted to supersede the original row, and cleared
 // whenever the edit is abandoned (cart cleared without checkout).
 let editingOfflineContext = null;
+
+// Set while a paid invoice is being modified: checkout then cancels the original and
+// creates the amendment (see amend_invoice) instead of making a new sale.
+const modifyContext = ref(null);
+const { requireAuthorization } = useAuthorization();
 
 // Helper function to compute cart hash
 function computeCartHash() {
@@ -2443,12 +2471,51 @@ async function handlePaymentCompleted(paymentData) {
 			const soldItemCodes = cartStore.invoiceItems.map((item) => item.item_code);
 			const soldBatches = cartStore.invoiceItems.filter((item) => item.batch_no);
 
-			const result = await cartStore.submitInvoice({
+			// Modifying a paid invoice: ask for approval (if a rule requires it), then the
+			// server cancels the original and creates the amendment in one go.
+			let amendment = null;
+			const amendAuthContext = modifyContext.value
+				? { pos_profile: modifyContext.value.posProfile, invoice: modifyContext.value.name }
+				: null;
+			if (modifyContext.value) {
+				const grant = await requireAuthorization("Sales Invoice Modify", amendAuthContext);
+				if (!grant) {
+					showWarning(__("Modification not authorized. The original invoice is unchanged."));
+					return;
+				}
+				amendment = {
+					originalInvoice: modifyContext.value.name,
+					reason: modifyContext.value.reason,
+					authorizationToken: grant.grant_token || null,
+				};
+			}
+
+			const submitOptions = {
 				isCreditSale: Boolean(paymentData.is_credit_sale),
 				receivableAccount: paymentData.receivable_account || null,
-			});
+				amendment,
+			};
+			let result;
+			try {
+				result = await cartStore.submitInvoice(submitOptions);
+			} catch (submitError) {
+				// Grant expired or was refused: ask again once, then retry
+				if (amendment && isAuthorizationError(submitError) && !amendment.authorizationToken) {
+					const retryGrant = await requireAuthorization(
+						"Sales Invoice Modify",
+						amendAuthContext,
+						{ force: true }
+					);
+					if (!retryGrant?.grant_token) throw submitError;
+					amendment.authorizationToken = retryGrant.grant_token;
+					result = await cartStore.submitInvoice(submitOptions);
+				} else {
+					throw submitError;
+				}
+			}
 
 			if (result) {
+				modifyContext.value = null;
 				uiStore.clearLastOfflinePrintDoc();
 
 				// If this online checkout originated from editing a still-queued
@@ -2547,6 +2614,7 @@ function handleClearCart() {
 }
 
 function confirmClearCart() {
+	modifyContext.value = null;
 	cartStore.clearCart();
 	// Reset cart hash when cart is cleared
 	previousCartHash = "";
@@ -2959,6 +3027,91 @@ async function confirmClearCache() {
 
 		showError(__("Failed to clear cache. Please try again."));
 	}
+}
+
+// Reopen a paid invoice in the cart for changes (items, discount, payment mode).
+// Nothing is cancelled here: the original stays valid until checkout succeeds.
+async function handleModifyInvoice({ invoice, reason }) {
+	try {
+		if (offlineStore.isOffline) {
+			showWarning(__("Modifying a paid invoice needs a connection."));
+			return;
+		}
+		if (!cartStore.isEmpty) {
+			showWarning(__("Finish or clear the current sale before modifying an invoice."));
+			return;
+		}
+
+		const doc = await call("pos_next.api.invoices.get_invoice", {
+			invoice_name: invoice.name,
+		});
+
+		cartStore.clearCart();
+
+		if (doc.customer) {
+			await cartStore.setCustomer({
+				name: doc.customer,
+				customer_name: doc.customer_name || doc.customer,
+			});
+		}
+
+		for (const row of doc.items || []) {
+			// Free items come back from the offers engine; don't carry them over twice
+			if (row.is_free_item) continue;
+			const listRate = row.price_list_rate || row.rate || 0;
+			// No profile is passed on purpose: the sale already took this stock, so the
+			// stock check would wrongly fail. The server re-validates when it re-posts.
+			cartStore.addItem(
+				{
+					item_code: row.item_code,
+					item_name: row.item_name,
+					rate: listRate,
+					price_list_rate: listRate,
+					uom: row.uom,
+					stock_uom: row.stock_uom,
+					conversion_factor: row.conversion_factor || 1,
+					warehouse: row.warehouse,
+					item_group: row.item_group,
+					image: row.image,
+					batch_no: row.batch_no || undefined,
+					serial_no: row.serial_no || undefined,
+					has_batch_no: row.batch_no ? 1 : 0,
+					has_serial_no: row.serial_no ? 1 : 0,
+				},
+				row.qty || 1,
+				true,
+				null
+			);
+		}
+
+		if (doc.discount_amount) {
+			cartStore.additionalDiscount = Math.abs(Number(doc.discount_amount) || 0);
+			cartStore.rebuildIncrementalCache();
+		}
+
+		modifyContext.value = { name: invoice.name, reason, posProfile: doc.pos_profile };
+
+		const paid = (doc.payments || [])
+			.filter((p) => p.mode_of_payment && Number(p.amount))
+			.map((p) => `${__(p.mode_of_payment)} ${p.amount}`)
+			.join(", ");
+		showSuccess(
+			paid
+				? __("{0} loaded for modification. Original payment: {1}", [invoice.name, paid])
+				: __("{0} loaded for modification", [invoice.name])
+		);
+	} catch (error) {
+		log.error("Error loading invoice for modification:", error);
+		modifyContext.value = null;
+		showError(error?.message || __("Could not load the invoice for modification"));
+	}
+}
+
+function cancelModify() {
+	modifyContext.value = null;
+	cartStore.clearCart();
+	previousCartHash = "";
+	showSuccess(__("Modification cancelled. The original invoice is unchanged."));
 }
 
 async function handleEditOfflineInvoice(invoice) {

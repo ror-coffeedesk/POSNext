@@ -322,7 +322,7 @@
   "export": 1,
   "if_owner": 0,
   "import": 0,
-  "modified": "2026-09-08 18:40:00.000000",
+  "modified": "2026-09-08 18:40:00",
   "name": "je_report_nexus_pos_manager",
   "parent": "Journal Entry",
   "permlevel": 0,

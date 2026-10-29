@@ -21,7 +21,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Action",
-   "options": "Sales Invoice Return\nSales Return Without Invoice",
+   "options": "Sales Invoice Modify\nSales Invoice Return\nSales Return Without Invoice",
    "reqd": 1
   },
   {

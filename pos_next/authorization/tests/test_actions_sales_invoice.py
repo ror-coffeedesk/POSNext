@@ -37,3 +37,16 @@ class TestSalesInvoiceActions(FrappeTestCase):
 			{"doctype": "Sales Invoice", "is_return": 1, "grand_total": -1500, "pos_profile": "P"}
 		)
 		self.assertEqual(gate.context_from_doc(doc)["amount"], 1500)
+
+	def test_modify_is_a_context_action_bound_to_the_invoice(self):
+		"""Modify is spent once by amend_invoice, so it has no doctype hook, and its
+		binding carries no amount (a modification may raise the total)."""
+		from pos_next.authorization.actions.sales_invoice import ACTION_SALES_INVOICE_MODIFY
+
+		action = registry.get(ACTION_SALES_INVOICE_MODIFY)
+		self.assertIsNotNone(action)
+		self.assertIsNone(action.doctype)
+		self.assertEqual(
+			action.binding({"pos_profile": "P", "invoice": "SINV-1", "amount": 99}),
+			{"pos_profile": "P", "invoice": "SINV-1"},
+		)

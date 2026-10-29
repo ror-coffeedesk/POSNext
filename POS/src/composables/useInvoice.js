@@ -58,6 +58,21 @@ export function useInvoice() {
 		auto: false,
 	});
 
+	// Modify a paid invoice: the server cancels it and creates the amendment in one request
+	const amendInvoiceResource = createResource({
+		url: "pos_next.api.invoices.amend_invoice",
+		makeParams(params) {
+			return {
+				original_invoice: params.original_invoice,
+				invoice: JSON.stringify(params.invoice),
+				data: JSON.stringify(params.data || {}),
+				reason: params.reason,
+				authorization_token: params.authorization_token || null,
+			};
+		},
+		auto: false,
+	});
+
 	const submitInvoiceResource = createResource({
 		url: "pos_next.api.invoices.submit_invoice",
 		makeParams(params) {
@@ -889,6 +904,7 @@ export function useInvoice() {
 				mode_of_payment: payment.mode_of_payment,
 				amount: payment.amount,
 				type: payment.type,
+				...(payment.card_last4 ? { custom_card_last4: payment.card_last4 } : {}),
 			}));
 	}
 
@@ -988,7 +1004,8 @@ export function useInvoice() {
 		deliveryDate = null,
 		writeOffAmount = 0,
 		isCreditSale = false,
-		receivableAccount = null
+		receivableAccount = null,
+		amendment = null
 	) {
 		/**
 		 * Two-step submission process with mutex protection:
@@ -1050,6 +1067,51 @@ export function useInvoice() {
 						sales_person: member.sales_person,
 						allocated_percentage: member.allocated_percentage || 0,
 					}));
+				}
+
+				// Modifying a paid invoice: one server call cancels the original and creates
+				// the amendment, so a failure leaves the original untouched.
+				if (amendment) {
+					const amendData = {
+						change_amount: remainingAmount.value < 0 ? Math.abs(remainingAmount.value) : 0,
+						write_off_amount: writeOffAmount || 0,
+						sales_team:
+							rawSalesTeam && rawSalesTeam.length > 0
+								? rawSalesTeam.map((member) => ({
+										sales_person: member.sales_person,
+										allocated_percentage: member.allocated_percentage || 0,
+									}))
+								: [],
+					};
+					if (redeemedCustomerCredit > 0 && customerCreditDict.length > 0) {
+						amendData.redeemed_customer_credit = redeemedCustomerCredit;
+						amendData.customer_credit_dict = customerCreditDict;
+					}
+
+					let amendResult;
+					try {
+						amendResult = await amendInvoiceResource.submit({
+							original_invoice: amendment.originalInvoice,
+							invoice: invoiceData,
+							data: amendData,
+							reason: amendment.reason,
+							authorization_token: amendment.authorizationToken,
+						});
+					} catch (error) {
+						const resourceError = amendInvoiceResource.error;
+						if (resourceError) {
+							error.exc_type = resourceError.exc_type || error.exc_type;
+							error._server_messages = resourceError._server_messages;
+							error.httpStatus = resourceError.httpStatus;
+							error.messages = resourceError.messages;
+							error.exception = resourceError.exception;
+							error.data = resourceError.data;
+						}
+						throw error;
+					}
+
+					resetInvoice();
+					return amendResult;
 				}
 
 				const draftInvoice = await updateInvoiceResource.submit({

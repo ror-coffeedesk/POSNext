@@ -1299,6 +1299,37 @@
 							{{ __("No payment methods available") }}
 						</div>
 
+						<!-- Card last 4 digits: one optional input per non-cash payment -->
+						<div
+							v-if="cardEntries.length > 0"
+							class="mt-2 p-2 rounded-lg border border-gray-200 bg-white"
+						>
+							<div
+								v-for="entry in cardEntries"
+								:key="entry.mode_of_payment"
+								class="flex items-center justify-between gap-2 py-1"
+							>
+								<label
+									:for="'card-last4-' + entry.mode_of_payment"
+									class="text-sm text-gray-700"
+								>
+									{{ __(entry.mode_of_payment) }}: {{ __("Card last 4 digits") }}
+								</label>
+								<input
+									:id="'card-last4-' + entry.mode_of_payment"
+									type="text"
+									inputmode="numeric"
+									pattern="[0-9]*"
+									maxlength="4"
+									autocomplete="off"
+									placeholder="0000"
+									:value="entry.card_last4 || ''"
+									@input="onCardLast4Input(entry, $event)"
+									class="w-20 px-2 py-1 text-center text-sm tracking-widest border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+								/>
+							</div>
+						</div>
+
 						<!-- Exact Amount Mode Info Banner -->
 						<div
 							v-if="
@@ -2218,7 +2249,11 @@ watch(
 function handleNumpadEnter(value) {
 	if (value > 0 && lastSelectedMethod.value) {
 		numpadAddPayment();
-	} else if (remainingAmount.value === 0 && totalPaid.value > 0 && canComplete.value) {
+	} else if (
+		remainingAmount.value === 0 &&
+		(totalPaid.value > 0 || isZeroTotal.value) &&
+		canComplete.value
+	) {
 		// If fully paid and can complete, trigger complete payment
 		completePayment();
 	}
@@ -2885,6 +2920,22 @@ const hasNonCashPayment = computed(() => {
 	});
 });
 
+// Card last 4 digits: asked for every non-cash payment except wallet points / customer credit
+const cardEntries = computed(() =>
+	paymentEntries.value.filter((entry) => {
+		if (entry.is_customer_credit || entry.is_wallet_payment) return false;
+		const method = paymentMethods.value.find((m) => m.mode_of_payment === entry.mode_of_payment);
+		return !!method && !isCashPaymentMethod(method) && !isReceivablePaymentMethod(method);
+	})
+);
+
+function onCardLast4Input(entry, event) {
+	// digits only, max 4
+	const digits = event.target.value.replace(/\D/g, "").slice(0, 4);
+	event.target.value = digits;
+	entry.card_last4 = digits;
+}
+
 // Check if current payment scenario allows overpayment (change)
 const allowsOverpayment = computed(() => {
 	// If exact amount mode is not active, allow overpayment
@@ -2914,10 +2965,18 @@ const isExactAmountValid = computed(() => {
 	return totalPaid.value <= roundCurrency(props.grandTotal);
 });
 
+// Nothing to collect (e.g. 100% discount / free items): the sale can be completed
+// without tendering any money
+const isZeroTotal = computed(() => roundCurrency(props.grandTotal) === 0);
+
 const canComplete = computed(() => {
 	// Check sales person validation first (mandatory when enabled)
 	if (!isSalesPersonValid.value) {
 		return false;
+	}
+
+	if (isZeroTotal.value) {
+		return true;
 	}
 
 	// Receivable payment modes require a customer on the invoice
@@ -3480,6 +3539,12 @@ function completePayment() {
 		return;
 	}
 
+	const badCard = cardEntries.value.find((e) => e.card_last4 && e.card_last4.length !== 4);
+	if (badCard) {
+		showWarning(__("Card last 4 digits must be exactly 4 digits ({0})", [badCard.mode_of_payment]));
+		return;
+	}
+
 	// "Pay on Receivable Account": the chosen account holds the unpaid balance (the invoice's
 	// debit_to). Tendered payments are real money; whatever is left (grand_total − tendered)
 	// stays outstanding on that account — it is NOT a payment row.
@@ -3490,8 +3555,22 @@ function completePayment() {
 	const isPartial = effectivePaid < props.grandTotal;
 	const outstanding = isPartial ? roundCurrency(props.grandTotal - effectivePaid) : 0;
 
+	let paymentRows = paymentEntries.value;
+	if (isZeroTotal.value && paymentRows.length === 0) {
+		const zeroMethod = getDefaultNonWalletMethod() || paymentMethods.value[0];
+		if (zeroMethod) {
+			paymentRows = [
+				{
+					mode_of_payment: zeroMethod.mode_of_payment,
+					amount: 0,
+					type: zeroMethod.type || __("Cash"),
+				},
+			];
+		}
+	}
+
 	const paymentData = {
-		payments: paymentEntries.value,
+		payments: paymentRows,
 		change_amount: changeAmount.value,
 		is_partial_payment: isPartial,
 		paid_amount: totalPaid.value,
